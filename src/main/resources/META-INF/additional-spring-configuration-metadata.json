@@ -1,0 +1,27 @@
+{"properties": [
+  {
+    "name": "jwt.secret",
+    "type": "java.lang.String",
+    "description": "Clave secreta para firmar los tokens JWT (mínimo 32 caracteres)."
+  },
+  {
+    "name": "jwt.expiration-minutes",
+    "type": "java.lang.Long",
+    "description": "Minutos de vigencia de un token JWT."
+  },
+  {
+    "name": "recovery.expiration-minutes",
+    "type": "java.lang.Long",
+    "description": "Minutos de vigencia del código de recuperación de contraseña."
+  },
+  {
+    "name": "mail.from",
+    "type": "java.lang.String",
+    "description": "Correo remitente de los mensajes enviados por la aplicación."
+  },
+  {
+    "name": "mail.from-name",
+    "type": "java.lang.String",
+    "description": "Nombre del remitente de los mensajes enviados por la aplicación."
+  }
+]}
