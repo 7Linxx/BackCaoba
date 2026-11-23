@@ -6,7 +6,6 @@ import co.edu.unbosque.backcaoba.dto.RegistroDTO;
 import co.edu.unbosque.backcaoba.dto.RestablecerContrasenaDTO;
 import co.edu.unbosque.backcaoba.dto.SolicitudRecuperacionDTO;
 import co.edu.unbosque.backcaoba.dto.UsuarioDTO;
-import co.edu.unbosque.backcaoba.dto.ValidarTokenDTO;
 import co.edu.unbosque.backcaoba.model.Rol;
 import co.edu.unbosque.backcaoba.model.TokenRecuperacion;
 import co.edu.unbosque.backcaoba.model.Usuario;
@@ -14,10 +13,16 @@ import co.edu.unbosque.backcaoba.repository.RolRepository;
 import co.edu.unbosque.backcaoba.repository.TokenRecuperacionRepository;
 import co.edu.unbosque.backcaoba.repository.UsuarioRepository;
 import co.edu.unbosque.backcaoba.security.JwtUtil;
-
+import co.edu.unbosque.backcaoba.security.UsuarioPrincipal;
 import org.modelmapper.ModelMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,129 +30,105 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class AuthService {
+
     private static final long SEGUNDOS_ENTRE_SOLICITUDES = 60;
     private static final int MAX_INTENTOS = 5;
-    private final UsuarioRepository usuarioRepository;
-    private final RolRepository rolRepository;
-    private final TokenRecuperacionRepository tokenRecuperacionRepository;
-    private final PasswordEncoder passwordEncoder;
-    private final JwtUtil jwtUtil;
-    private final CorreoService correoService;
-    private final ModelMapper modelMapper;
-    private final long minutosRecuperacion;
+    private static final String PATRON_CONTRASENA = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$";
+
+    @Autowired
+    private UsuarioRepository usuarioRepository;
+
+    @Autowired
+    private RolRepository rolRepository;
+
+    @Autowired
+    private TokenRecuperacionRepository tokenRecuperacionRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private AuthenticationManager authenticationManager;
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    @Autowired
+    private CorreoService correoService;
+
+    @Autowired
+    private ModelMapper modelMapper;
+
+    @Value("${recovery.expiration-minutes}")
+    private long minutosRecuperacion;
+
     private final SecureRandom aleatorio = new SecureRandom();
-    private final ConcurrentMap<Long, Integer> intentosFallidos = new ConcurrentHashMap<>();
 
-    public AuthService(UsuarioRepository usuarioRepository, RolRepository rolRepository,
-            TokenRecuperacionRepository tokenRecuperacionRepository, PasswordEncoder passwordEncoder,
-            JwtUtil jwtUtil, CorreoService correoService, ModelMapper modelMapper,
-            @Value("${recovery.expiration-minutes}") long minutosRecuperacion) {
-        this.usuarioRepository = usuarioRepository;
-        this.rolRepository = rolRepository;
-        this.tokenRecuperacionRepository = tokenRecuperacionRepository;
-        this.passwordEncoder = passwordEncoder;
-        this.jwtUtil = jwtUtil;
-        this.correoService = correoService;
-        this.modelMapper = modelMapper;
-        this.minutosRecuperacion = minutosRecuperacion;
-    }
-
-    private ResponseStatusException error(HttpStatus status, String message) {
-        return new ResponseStatusException(status, message);
-    }
-
-    private String normalizar(String value) {
-        return Normalizer.normalize(value == null ? "" : value.trim(), Normalizer.Form.NFD)
-                .replaceAll("\\p{M}", "").toUpperCase(Locale.ROOT);
-    }
-
-    private String hash(String value) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception ex) {
-            throw new IllegalStateException("No fue posible procesar el token", ex);
-        }
-    }
-
-    private AuthResponseDTO crearRespuestaAuth(Usuario usuario) {
-        String token = jwtUtil.generarToken(usuario.getCorreo(), usuario.getRol().getNombre());
-        String nombreCompleto = (usuario.getNombre() + " " + usuario.getApellido()).trim();
-        return new AuthResponseDTO(token, "Bearer", usuario.getIdUsuario(), nombreCompleto,
-                usuario.getRol().getNombre());
-    }
-
-    private Rol obtenerRol(String nombre) {
-        String buscado = normalizar(nombre);
-        return rolRepository.findAll().stream()
-                .filter(rol -> normalizar(rol.getNombre()).equals(buscado))
-                .findFirst().orElseThrow(() -> error(HttpStatus.INTERNAL_SERVER_ERROR,
-                        "El rol solicitado no existe en la base de datos: " + nombre));
-    }
-
-    public void validarContrasenaSegura(String contrasena) {
-        if (contrasena == null || !contrasena.matches("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$")) {
-            throw error(HttpStatus.BAD_REQUEST,
-                    "La contraseña debe tener mínimo 8 caracteres, una mayúscula, una minúscula y un número.");
-        }
-    }
+    /** Intentos fallidos por código de recuperación (idToken -> intentos). */
+    private final Map<Integer, Integer> intentosFallidos = new ConcurrentHashMap<>();
 
     @Transactional
-    public UsuarioDTO registrar(RegistroDTO datos) {
-        if (!Boolean.TRUE.equals(datos.getAceptaTratamientoDatos())) {
+    public UsuarioDTO registrar(RegistroDTO dto) {
+        if (!Boolean.TRUE.equals(dto.getAceptaTratamientoDatos())) {
             throw error(HttpStatus.BAD_REQUEST, "Debe aceptar el tratamiento de datos personales.");
         }
-        String rol = normalizar(datos.getRol());
-        if (!"HUESPED".equals(rol) && !"ANFITRION".equals(rol)) {
+        String nombreRol = normalizar(dto.getRol());
+        if (!"HUESPED".equals(nombreRol) && !"ANFITRION".equals(nombreRol)) {
             throw error(HttpStatus.BAD_REQUEST, "Solo puede registrarse como HUÉSPED o ANFITRIÓN.");
         }
-        String correo = datos.getCorreo().trim().toLowerCase(Locale.ROOT);
+        String correo = normalizarCorreo(dto.getCorreo());
         if (usuarioRepository.existsByCorreo(correo)) {
             throw error(HttpStatus.CONFLICT, "El correo ya está registrado.");
         }
-        validarContrasenaSegura(datos.getContrasena());
-        Usuario usuario = new Usuario();
-        usuario.setNombre(datos.getNombre().trim());
-        usuario.setApellido(datos.getApellido().trim());
-        usuario.setCorreo(correo);
-        usuario.setTelefono(datos.getTelefono() == null || datos.getTelefono().isBlank()
-                ? null
-                : datos.getTelefono().trim());
-        usuario.setContrasenaHash(passwordEncoder.encode(datos.getContrasena()));
-        usuario.setRol(obtenerRol(rol));
-        usuario.setFechaAceptacionDatos(LocalDateTime.now());
-        usuarioRepository.save(usuario);
-        return modelMapper.map(usuario, UsuarioDTO.class);
+        validarContrasenaSegura(dto.getContrasena());
+
+        Usuario entity = modelMapper.map(dto, Usuario.class);
+        entity.setIdUsuario(null);
+        entity.setNombre(dto.getNombre().trim());
+        entity.setApellido(dto.getApellido().trim());
+        entity.setCorreo(correo);
+        entity.setTelefono(limpiarTelefono(dto.getTelefono()));
+        entity.setContrasenaHash(passwordEncoder.encode(dto.getContrasena()));
+        entity.setRol(buscarRol(nombreRol));
+        entity.setFechaAceptacionDatos(LocalDateTime.now());
+        usuarioRepository.save(entity);
+        return modelMapper.map(entity, UsuarioDTO.class);
     }
 
-    public AuthResponseDTO iniciarSesion(LoginDTO datos) {
-        Usuario usuario = usuarioRepository.findByCorreo(datos.getCorreo().trim().toLowerCase(Locale.ROOT))
-                .orElseThrow(() -> error(HttpStatus.UNAUTHORIZED, "correo o contraseña incorrectos"));
-        if (!passwordEncoder.matches(datos.getContrasena(), usuario.getContrasenaHash())) {
+    public AuthResponseDTO iniciarSesion(LoginDTO dto) {
+        try {
+            Authentication authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(normalizarCorreo(dto.getCorreo()), dto.getContrasena()));
+            UsuarioPrincipal principal = (UsuarioPrincipal) authentication.getPrincipal();
+            Usuario usuario = usuarioRepository.findById(principal.getIdUsuario())
+                    .orElseThrow(() -> error(HttpStatus.UNAUTHORIZED, "correo o contraseña incorrectos"));
+            return crearRespuestaAuth(usuario);
+        } catch (DisabledException e) {
+            throw error(HttpStatus.FORBIDDEN, "La cuenta está desactivada o restringida.");
+        } catch (AuthenticationException e) {
             throw error(HttpStatus.UNAUTHORIZED, "correo o contraseña incorrectos");
         }
-        if (!"ACTIVA".equalsIgnoreCase(usuario.getEstadoCuenta())) {
-            throw error(HttpStatus.FORBIDDEN, "La cuenta está desactivada o restringida.");
-        }
-        return crearRespuestaAuth(usuario);
     }
 
+    // Extra (no está en el diagrama): reactivar una cuenta desactivada por el propio usuario
     @Transactional
-    public AuthResponseDTO reactivarCuenta(LoginDTO datos) {
-        Usuario usuario = usuarioRepository.findByCorreo(datos.getCorreo().trim().toLowerCase(Locale.ROOT))
+    public AuthResponseDTO reactivarCuenta(LoginDTO dto) {
+        Usuario usuario = usuarioRepository.findByCorreo(normalizarCorreo(dto.getCorreo()))
                 .orElseThrow(() -> error(HttpStatus.UNAUTHORIZED, "correo o contraseña incorrectos"));
-        if (!passwordEncoder.matches(datos.getContrasena(), usuario.getContrasenaHash())) {
+        if (!passwordEncoder.matches(dto.getContrasena(), usuario.getContrasenaHash())) {
             throw error(HttpStatus.UNAUTHORIZED, "correo o contraseña incorrectos");
         }
         if (!"INACTIVA".equalsIgnoreCase(usuario.getEstadoCuenta())) {
@@ -159,8 +140,129 @@ public class AuthService {
         return crearRespuestaAuth(usuario);
     }
 
-    private String generarCodigoRecuperacion() {
-        return String.format("%06d", aleatorio.nextInt(1_000_000));
+    @Transactional
+    public void solicitarRecuperacion(SolicitudRecuperacionDTO dto) {
+        Usuario usuario = usuarioRepository.findByCorreo(normalizarCorreo(dto.getCorreo()))
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "No existe una cuenta registrada con ese correo."));
+        if ("RESTRINGIDA".equalsIgnoreCase(usuario.getEstadoCuenta())) {
+            throw error(HttpStatus.FORBIDDEN, "La cuenta está restringida. Comunícate con el administrador.");
+        }
+        if (tokenRecuperacionRepository.existsByUsuarioIdUsuarioAndFechaCreacionAfter(
+                usuario.getIdUsuario(), LocalDateTime.now().minusSeconds(SEGUNDOS_ENTRE_SOLICITUDES))) {
+            throw error(HttpStatus.TOO_MANY_REQUESTS,
+                    "Ya enviamos un código hace poco. Espera un minuto antes de solicitar otro.");
+        }
+
+        // Los códigos anteriores que no se usaron dejan de servir
+        List<TokenRecuperacion> pendientes = tokenRecuperacionRepository
+                .findByUsuarioIdUsuarioAndUsadoFalse(usuario.getIdUsuario());
+        for (TokenRecuperacion pendiente : pendientes) {
+            pendiente.setUsado(true);
+        }
+        tokenRecuperacionRepository.saveAll(pendientes);
+
+        String codigo = generarTokenRecuperacion(usuario);
+        correoService.enviarCodigoRecuperacion(usuario.getCorreo(), codigo);
+    }
+
+    // Extra (no está en el diagrama): comprobar el código antes de pedir la nueva contraseña
+    @Transactional(noRollbackFor = ResponseStatusException.class)
+    public void validarTokenRecuperacion(RestablecerContrasenaDTO dto) {
+        if (esVacio(dto.getCorreo()) || esVacio(dto.getToken())) {
+            throw error(HttpStatus.BAD_REQUEST, "Ingresa el correo y el código que llegó a tu correo.");
+        }
+        obtenerTokenVigente(dto.getCorreo(), dto.getToken());
+    }
+
+    @Transactional(noRollbackFor = ResponseStatusException.class)
+    public void restablecerContrasena(RestablecerContrasenaDTO dto) {
+        validarContrasenaSegura(dto.getNuevaContrasena());
+        if (!dto.getNuevaContrasena().equals(dto.getConfirmacionContrasena())) {
+            throw error(HttpStatus.BAD_REQUEST, "Las contraseñas no coinciden.");
+        }
+        TokenRecuperacion token = obtenerTokenVigente(dto.getCorreo(), dto.getToken());
+        Usuario usuario = token.getUsuario();
+        if (passwordEncoder.matches(dto.getNuevaContrasena(), usuario.getContrasenaHash())) {
+            throw error(HttpStatus.BAD_REQUEST, "La nueva contraseña debe ser diferente a la actual.");
+        }
+        usuario.setContrasenaHash(passwordEncoder.encode(dto.getNuevaContrasena()));
+        usuarioRepository.save(usuario);
+        token.setUsado(true);
+        tokenRecuperacionRepository.save(token);
+        intentosFallidos.remove(token.getIdToken());
+    }
+
+    private void validarContrasenaSegura(String contrasena) {
+        if (contrasena == null || !contrasena.matches(PATRON_CONTRASENA)) {
+            throw error(HttpStatus.BAD_REQUEST,
+                    "La contraseña debe tener mínimo 8 caracteres, una mayúscula, una minúscula y un número.");
+        }
+    }
+
+    /**
+     * Crea y guarda un código de recuperación para el usuario. En la base de
+     * datos solo se guarda el hash del código; el código en claro se devuelve
+     * para enviarlo por correo.
+     */
+    private String generarTokenRecuperacion(Usuario usuario) {
+        String codigo = String.format("%06d", aleatorio.nextInt(1_000_000));
+        TokenRecuperacion token = new TokenRecuperacion();
+        token.setUsuario(usuario);
+        token.setTokenHash(hashCodigo(generarSal(), codigo));
+        token.setFechaCreacion(LocalDateTime.now());
+        token.setFechaExpiracion(LocalDateTime.now().plusMinutes(minutosRecuperacion));
+        token.setUsado(false);
+        tokenRecuperacionRepository.save(token);
+        return codigo;
+    }
+
+    private TokenRecuperacion obtenerTokenVigente(String correo, String codigo) {
+        Usuario usuario = usuarioRepository.findByCorreo(normalizarCorreo(correo))
+                .orElseThrow(() -> error(HttpStatus.BAD_REQUEST, "El código no es válido."));
+
+        // Al pedir un código nuevo se invalidan los anteriores, así que solo queda uno pendiente
+        TokenRecuperacion token = null;
+        for (TokenRecuperacion pendiente : tokenRecuperacionRepository
+                .findByUsuarioIdUsuarioAndUsadoFalse(usuario.getIdUsuario())) {
+            if (token == null || pendiente.getIdToken() > token.getIdToken()) {
+                token = pendiente;
+            }
+        }
+        if (token == null) {
+            throw error(HttpStatus.BAD_REQUEST,
+                    "El código ya fue utilizado o fue reemplazado por uno más reciente. Solicita uno nuevo.");
+        }
+        if (!token.getFechaExpiracion().isAfter(LocalDateTime.now())) {
+            throw error(HttpStatus.BAD_REQUEST, "El código venció. Solicita uno nuevo.");
+        }
+        if (!codigoCoincide(token.getTokenHash(), codigo.trim())) {
+            int fallidos = intentosFallidos.getOrDefault(token.getIdToken(), 0) + 1;
+            if (fallidos >= MAX_INTENTOS) {
+                intentosFallidos.remove(token.getIdToken());
+                token.setUsado(true);
+                tokenRecuperacionRepository.save(token);
+                throw error(HttpStatus.BAD_REQUEST,
+                        "Superaste el número máximo de intentos. Solicita un nuevo código.");
+            }
+            intentosFallidos.put(token.getIdToken(), fallidos);
+            int restantes = MAX_INTENTOS - fallidos;
+            throw error(HttpStatus.BAD_REQUEST, "El código no es válido. Te quedan " + restantes
+                    + (restantes == 1 ? " intento." : " intentos."));
+        }
+        return token;
+    }
+
+    private AuthResponseDTO crearRespuestaAuth(Usuario usuario) {
+        String rol = usuario.getRol().getNombre();
+        String token = jwtUtil.generarToken(usuario.getCorreo(), rol);
+        String nombreCompleto = (usuario.getNombre() + " " + usuario.getApellido()).trim();
+        return new AuthResponseDTO(token, "Bearer", usuario.getIdUsuario(), nombreCompleto, rol);
+    }
+
+    private Rol buscarRol(String nombre) {
+        return rolRepository.findByNombre(normalizar(nombre))
+                .orElseThrow(() -> error(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "El rol solicitado no existe en la base de datos: " + nombre));
     }
 
     private String generarSal() {
@@ -170,7 +272,13 @@ public class AuthService {
     }
 
     private String hashCodigo(String sal, String codigo) {
-        return sal + "$" + hash(sal + ":" + codigo);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((sal + ":" + codigo).getBytes(StandardCharsets.UTF_8));
+            return sal + "$" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("No fue posible procesar el código", ex);
+        }
     }
 
     private boolean codigoCoincide(String guardado, String codigo) {
@@ -183,81 +291,24 @@ public class AuthService {
                 guardado.getBytes(StandardCharsets.UTF_8));
     }
 
-    @Transactional
-    public void solicitarRecuperacion(SolicitudRecuperacionDTO datos) {
-        Usuario usuario = usuarioRepository.findByCorreo(datos.getCorreo().trim().toLowerCase(Locale.ROOT))
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND,
-                        "No existe una cuenta registrada con ese correo."));
-        if ("RESTRINGIDA".equalsIgnoreCase(usuario.getEstadoCuenta())) {
-            throw error(HttpStatus.FORBIDDEN,
-                    "La cuenta está restringida. Comunícate con el administrador.");
-        }
-        if (tokenRecuperacionRepository.existsByUsuarioAndFechaCreacionAfter(
-                usuario, LocalDateTime.now().minusSeconds(SEGUNDOS_ENTRE_SOLICITUDES))) {
-            throw error(HttpStatus.TOO_MANY_REQUESTS,
-                    "Ya enviamos un código hace poco. Espera un minuto antes de solicitar otro.");
-        }
-        tokenRecuperacionRepository.invalidarPendientes(usuario);
-        String codigo = generarCodigoRecuperacion();
-        TokenRecuperacion token = new TokenRecuperacion();
-        token.setUsuario(usuario);
-        token.setTokenHash(hashCodigo(generarSal(), codigo));
-        token.setFechaExpiracion(LocalDateTime.now().plusMinutes(minutosRecuperacion));
-        tokenRecuperacionRepository.save(token);
-        correoService.enviarRecuperacion(usuario.getCorreo(), usuario.getNombre(), codigo, minutosRecuperacion);
+    private String normalizar(String valor) {
+        return Normalizer.normalize(valor == null ? "" : valor.trim(), Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "").toUpperCase(Locale.ROOT);
     }
 
-    private TokenRecuperacion obtenerTokenVigente(String correo, String codigo) {
-        Usuario usuario = usuarioRepository.findByCorreo(correo.trim().toLowerCase(Locale.ROOT))
-                .orElseThrow(() -> error(HttpStatus.BAD_REQUEST, "El código no es válido."));
-        TokenRecuperacion token = tokenRecuperacionRepository.findFirstByUsuarioOrderByIdDesc(usuario)
-                .orElseThrow(() -> error(HttpStatus.BAD_REQUEST, "El código no es válido. Solicita uno nuevo."));
-        if (token.isUsado()) {
-            throw error(HttpStatus.BAD_REQUEST,
-                    "El código ya fue utilizado o fue reemplazado por uno más reciente. Solicita uno nuevo.");
-        }
-        if (!token.getFechaExpiracion().isAfter(LocalDateTime.now())) {
-            throw error(HttpStatus.BAD_REQUEST, "El código venció. Solicita uno nuevo.");
-        }
-        if (!codigoCoincide(token.getTokenHash(), codigo.trim())) {
-            Long tokenId = token.getId();
-            int fallidos = intentosFallidos.getOrDefault(tokenId, 0) + 1;
-            intentosFallidos.put(tokenId, fallidos);
-            if (fallidos >= MAX_INTENTOS) {
-                intentosFallidos.remove(tokenId);
-                token.setUsado(true);
-                tokenRecuperacionRepository.save(token);
-                throw error(HttpStatus.BAD_REQUEST,
-                        "Superaste el número máximo de intentos. Solicita un nuevo código.");
-            }
-            int restantes = MAX_INTENTOS - fallidos;
-            throw error(HttpStatus.BAD_REQUEST, "El código no es válido. Te quedan " + restantes
-                    + (restantes == 1 ? " intento." : " intentos."));
-        }
-        return token;
+    private String normalizarCorreo(String correo) {
+        return correo == null ? "" : correo.trim().toLowerCase(Locale.ROOT);
     }
 
-    @Transactional(noRollbackFor = ResponseStatusException.class)
-    public void validarTokenRecuperacion(ValidarTokenDTO datos) {
-        obtenerTokenVigente(datos.correo(), datos.token());
+    private String limpiarTelefono(String telefono) {
+        return esVacio(telefono) ? null : telefono.trim();
     }
 
-    @Transactional(noRollbackFor = ResponseStatusException.class)
-    public void restablecerContrasena(RestablecerContrasenaDTO datos) {
-        validarContrasenaSegura(datos.getNuevaContrasena());
-        if (!datos.getNuevaContrasena().equals(datos.getConfirmacionContrasena())) {
-            throw error(HttpStatus.BAD_REQUEST, "Las contraseñas no coinciden.");
-        }
-        TokenRecuperacion token = obtenerTokenVigente(datos.getCorreo(), datos.getToken());
-        Usuario usuario = token.getUsuario();
-        if (passwordEncoder.matches(datos.getNuevaContrasena(), usuario.getContrasenaHash())) {
-            throw error(HttpStatus.BAD_REQUEST,
-                    "La nueva contraseña debe ser diferente a la actual.");
-        }
-        usuario.setContrasenaHash(passwordEncoder.encode(datos.getNuevaContrasena()));
-        usuarioRepository.save(usuario);
-        token.setUsado(true);
-        tokenRecuperacionRepository.save(token);
-        intentosFallidos.remove(token.getId());
+    private boolean esVacio(String valor) {
+        return valor == null || valor.isBlank();
+    }
+
+    private ResponseStatusException error(HttpStatus status, String mensaje) {
+        return new ResponseStatusException(status, mensaje);
     }
 }

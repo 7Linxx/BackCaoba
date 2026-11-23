@@ -1,8 +1,12 @@
 package co.edu.unbosque.backcaoba.dto;
 
+import jakarta.validation.constraints.NotBlank;
+
 public class RolDTO {
 
     private Integer idRol;
+
+    @NotBlank(message = "El rol es obligatorio.")
     private String nombre;
 
     public RolDTO() {

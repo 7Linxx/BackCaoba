@@ -1,8 +1,7 @@
 package co.edu.unbosque.backcaoba.configuration;
 
-import co.edu.unbosque.backcaoba.dto.RolDTO;
+import co.edu.unbosque.backcaoba.dto.RegistroDTO;
 import co.edu.unbosque.backcaoba.dto.UsuarioDTO;
-import co.edu.unbosque.backcaoba.model.Rol;
 import co.edu.unbosque.backcaoba.model.Usuario;
 import org.hibernate.collection.spi.PersistentCollection;
 import org.modelmapper.ModelMapper;
@@ -38,8 +37,9 @@ public class ModelMapperConfig {
         modelMapper.typeMap(Usuario.class, UsuarioDTO.class)
                 .addMappings(m -> m.map(origen -> origen.getRol().getNombre(), UsuarioDTO::setRol));
 
-        modelMapper.typeMap(Rol.class, RolDTO.class)
-                .addMappings(m -> m.map(origen -> origen.getIdRol().intValue(), RolDTO::setIdRol));
+        // El rol llega como texto ("HUESPED"); el service busca la entidad Rol y la asigna
+        modelMapper.typeMap(RegistroDTO.class, Usuario.class)
+                .addMappings(m -> m.skip(Usuario::setRol));
 
         return modelMapper;
     }

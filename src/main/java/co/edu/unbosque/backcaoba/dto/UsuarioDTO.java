@@ -1,13 +1,25 @@
 package co.edu.unbosque.backcaoba.dto;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import java.time.LocalDateTime;
 
 public class UsuarioDTO {
 
     private Integer idUsuario;
+
+    @NotBlank(message = "El nombre es obligatorio.")
+    @Size(max = 100)
     private String nombre;
+
+    @NotBlank(message = "El apellido es obligatorio.")
+    @Size(max = 100)
     private String apellido;
+
     private String correo;
+
+    @Pattern(regexp = "^$|[0-9+() -]{7,20}$", message = "Teléfono inválido")
     private String telefono;
     private String estadoCuenta;
     private String motivoRestriccion;
