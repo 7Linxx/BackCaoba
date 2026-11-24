@@ -3,6 +3,9 @@ package co.edu.unbosque.backcaoba.controller;
 import co.edu.unbosque.backcaoba.dto.ConteoPeriodoDTO;
 import co.edu.unbosque.backcaoba.dto.ConteoRolDTO;
 import co.edu.unbosque.backcaoba.service.ReporteService;
+import co.edu.unbosque.backcaoba.dto.ConteoEstadoDTO;
+import co.edu.unbosque.backcaoba.security.UsuarioPrincipal;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,6 +38,33 @@ public class ReporteController {
     public ResponseEntity<List<ConteoPeriodoDTO>> usuariosUltimoAnio() {
         return ResponseEntity.ok(reporteService.contarUsuariosUltimoAnio());
     }
+    @GetMapping("/anfitrion/misReservasPorEstado")
+    public ResponseEntity<List<ConteoEstadoDTO>> misReservasPorEstado(
+            @AuthenticationPrincipal UsuarioPrincipal principal) {
+        return ResponseEntity.ok(reporteService.contarMisReservasPorEstado(principal.getIdUsuario()));
+    }
+
+    @GetMapping("/anfitrion/{reporte}/excel")
+    public ResponseEntity<byte[]> descargarExcelAnfitrion(
+            @AuthenticationPrincipal UsuarioPrincipal principal, @PathVariable String reporte) {
+        byte[] archivo = reporteService.exportarExcelAnfitrion(reporte, principal.getIdUsuario());
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + reporte + ".xlsx\"")
+                .contentType(MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(archivo);
+    }
+
+    @GetMapping("/anfitrion/{reporte}/pdf")
+    public ResponseEntity<byte[]> descargarPdfAnfitrion(
+            @AuthenticationPrincipal UsuarioPrincipal principal, @PathVariable String reporte) {
+        byte[] archivo = reporteService.exportarPdfAnfitrion(reporte, principal.getIdUsuario());
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + reporte + ".pdf\"")
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(archivo);
+    }
+    
     
     @GetMapping("/{reporte}/excel")
     public ResponseEntity<byte[]> descargarExcel(@PathVariable String reporte) {

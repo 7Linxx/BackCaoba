@@ -6,6 +6,8 @@ import co.edu.unbosque.backcaoba.dto.TablaReporteDTO;
 import co.edu.unbosque.backcaoba.model.Rol;
 import co.edu.unbosque.backcaoba.repository.RolRepository;
 import co.edu.unbosque.backcaoba.repository.UsuarioRepository;
+import co.edu.unbosque.backcaoba.dto.ConteoEstadoDTO;
+import co.edu.unbosque.backcaoba.repository.ReservaRepository;
 import co.edu.unbosque.backcaoba.util.ExcelExporter;
 import co.edu.unbosque.backcaoba.util.PdfExporter;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +35,10 @@ public class ReporteService {
     private static final DateTimeFormatter FORMATO_DIA = DateTimeFormatter.ofPattern("dd/MM");
     private static final DateTimeFormatter FORMATO_MES =
             DateTimeFormatter.ofPattern("MMM yyyy", Locale.forLanguageTag("es-CO"));
+    private static final List<String> ESTADOS_RESERVA = List.of("CONFIRMADA", "CANCELADA");
+
+    @Autowired
+    private ReservaRepository reservaRepository;
 
     @Autowired
     private UsuarioRepository usuarioRepository;
@@ -104,6 +110,18 @@ public class ReporteService {
         return PdfExporter.generar(tabla.getTitulo(), tabla.getColumnas(), tabla.getFilas());
     }
 
+    @Transactional(readOnly = true)
+    public List<ConteoEstadoDTO> contarMisReservasPorEstado(Integer idAnfitrion) {
+        long total = reservaRepository.countByAlojamientoAnfitrionIdUsuario(idAnfitrion);
+        List<ConteoEstadoDTO> lista = new ArrayList<>();
+        for (String estado : ESTADOS_RESERVA) {
+            long cantidad = reservaRepository
+                    .countByAlojamientoAnfitrionIdUsuarioAndEstado(idAnfitrion, estado);
+            double porcentaje = total == 0 ? 0.0 : Math.round(cantidad * 1000.0 / total) / 10.0;
+            lista.add(new ConteoEstadoDTO(estado, cantidad, porcentaje));
+        }
+        return lista;
+    }
   
     private TablaReporteDTO armarTabla(String reporte) {
         String clave = reporte == null ? "" : reporte.trim();
@@ -139,5 +157,33 @@ public class ReporteService {
         }
     }
     
-    
+    @Transactional(readOnly = true)
+    public byte[] exportarExcelAnfitrion(String reporte, Integer idAnfitrion) {
+        TablaReporteDTO tabla = armarTablaAnfitrion(reporte, idAnfitrion);
+        return ExcelExporter.generar(tabla.getTitulo(), tabla.getColumnas(), tabla.getFilas());
+    }
+
+    @Transactional(readOnly = true)
+    public byte[] exportarPdfAnfitrion(String reporte, Integer idAnfitrion) {
+        TablaReporteDTO tabla = armarTablaAnfitrion(reporte, idAnfitrion);
+        return PdfExporter.generar(tabla.getTitulo(), tabla.getColumnas(), tabla.getFilas());
+    }
+
+    private TablaReporteDTO armarTablaAnfitrion(String reporte, Integer idAnfitrion) {
+        String clave = reporte == null ? "" : reporte.trim();
+
+        switch (clave) {
+            case "misReservasPorEstado" -> {
+                List<String[]> filas = new ArrayList<>();
+                for (ConteoEstadoDTO d : contarMisReservasPorEstado(idAnfitrion)) {
+                    filas.add(new String[] { d.getEstado(), String.valueOf(d.getCantidad()),
+                            String.format(Locale.US, "%.1f%%", d.getPorcentaje()) });
+                }
+                return new TablaReporteDTO("Mis reservas por estado",
+                        new String[] { "Estado", "Cantidad", "Porcentaje" }, filas);
+            }
+            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Reporte no válido.");
+        }
+    }
 }
