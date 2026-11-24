@@ -15,6 +15,9 @@ public interface ReservaRepository extends JpaRepository<Reserva, Integer> {
     List<Reserva> findByHuespedIdUsuarioOrderByFechaSolicitudDesc(Integer idHuesped);
 
     List<Reserva> findByAlojamientoAnfitrionIdUsuarioOrderByFechaSolicitudDesc(Integer idAnfitrion);
+    long countByAlojamientoAnfitrionIdUsuario(Integer idAnfitrion);
+
+    long countByAlojamientoAnfitrionIdUsuarioAndEstado(Integer idAnfitrion, String estado);
 
     List<Reserva> findByAlojamientoIdAlojamientoAndEstadoOrderByFechaEntradaAsc(
             Integer idAlojamiento,

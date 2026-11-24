@@ -80,8 +80,8 @@ public class SecurityConfig {
                                 "/swagger-ui.html", "/swagger-ui/**",
                                 "/v3/api-docs/**")
                         .permitAll()
+                        .requestMatchers("/api/reporte/anfitrion/**").hasRole("ANFITRION")
                         .requestMatchers("/api/admin/**", "/api/reporte/**").hasRole("ADMINISTRADOR")
-                        // M04
                         .requestMatchers(HttpMethod.GET, "/api/alojamientos/**")
                         .hasAnyRole("HUESPED", "ANFITRION", "ADMINISTRADOR")
                         .requestMatchers(HttpMethod.POST, "/api/cotizaciones/**")
