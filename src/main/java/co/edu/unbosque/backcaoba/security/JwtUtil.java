@@ -6,26 +6,30 @@ import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
+
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 
 @Component
 public class JwtUtil {
-    private final long expiracion;
-    private final SecretKey key;
 
-    public JwtUtil(@Value("${jwt.secret}") String secret,
-            @Value("${jwt.expiration-minutes}") long expirationMinutes) {
-        this.expiracion = expirationMinutes * 60_000L;
-        this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-    }
+    @Value("${jwt.secret}")
+    private String secret;
+
+    /** Minutos de vigencia del token. */
+    @Value("${jwt.expiration-minutes}")
+    private long expiracion;
 
     public String generarToken(String correo, String rol) {
         long ahora = System.currentTimeMillis();
-        return Jwts.builder().subject(correo).claim("rol", rol)
-                .issuedAt(new Date(ahora)).expiration(new Date(ahora + expiracion))
-                .signWith(key).compact();
+        return Jwts.builder()
+                .subject(correo)
+                .claim("rol", rol)
+                .issuedAt(new Date(ahora))
+                .expiration(new Date(ahora + expiracion * 60_000L))
+                .signWith(obtenerClave())
+                .compact();
     }
 
     public String extraerCorreo(String token) {
@@ -39,6 +43,10 @@ public class JwtUtil {
     }
 
     private Claims extraerClaims(String token) {
-        return Jwts.parser().verifyWith(key).build().parseSignedClaims(token).getPayload();
+        return Jwts.parser().verifyWith(obtenerClave()).build().parseSignedClaims(token).getPayload();
+    }
+
+    private SecretKey obtenerClave() {
+        return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
     }
 }

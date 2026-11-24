@@ -1,11 +1,12 @@
 package co.edu.unbosque.backcaoba.controller;
 
-import co.edu.unbosque.backcaoba.dto.ActualizarPerfilDTO;
-import co.edu.unbosque.backcaoba.dto.EstadoCuentaResponseDTO;
 import co.edu.unbosque.backcaoba.dto.UsuarioDTO;
+import co.edu.unbosque.backcaoba.security.UsuarioPrincipal;
 import co.edu.unbosque.backcaoba.service.UsuarioService;
 import jakarta.validation.Valid;
-import org.springframework.security.core.Authentication;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -17,30 +18,24 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/auth")
 public class UsuarioController {
-    private final UsuarioService usuarioService;
 
-    public UsuarioController(UsuarioService usuarioService) {
-        this.usuarioService = usuarioService;
-    }
+    @Autowired
+    private UsuarioService usuarioService;
 
     @GetMapping("/perfil")
-    public UsuarioDTO obtenerPerfil(Authentication authentication) {
-        return usuarioService.obtenerPerfil(authentication.getName());
+    public ResponseEntity<UsuarioDTO> obtenerPerfil(@AuthenticationPrincipal UsuarioPrincipal principal) {
+        return ResponseEntity.ok(usuarioService.obtenerPerfil(principal.getIdUsuario()));
     }
 
     @PutMapping("/perfil")
-    public UsuarioDTO actualizarPerfil(
-            Authentication authentication,
-            @Valid @RequestBody ActualizarPerfilDTO datos) {
-        return usuarioService.actualizarPerfil(authentication.getName(), datos);
+    public ResponseEntity<UsuarioDTO> actualizarPerfil(@AuthenticationPrincipal UsuarioPrincipal principal,
+            @Valid @RequestBody UsuarioDTO dto) {
+        return ResponseEntity.ok(usuarioService.actualizarPerfil(principal.getIdUsuario(), dto));
     }
 
     @PatchMapping("/cuenta")
-    public EstadoCuentaResponseDTO cambiarEstadoCuenta(
-            Authentication authentication,
-            @RequestParam boolean activa) {
-        String estado = activa ? "ACTIVA" : "INACTIVA";
-        usuarioService.cambiarEstadoCuenta(authentication.getName(), estado);
-        return new EstadoCuentaResponseDTO(estado);
+    public ResponseEntity<UsuarioDTO> cambiarEstadoCuenta(@AuthenticationPrincipal UsuarioPrincipal principal,
+            @RequestParam Boolean activa) {
+        return ResponseEntity.ok(usuarioService.cambiarEstadoCuenta(principal.getIdUsuario(), activa));
     }
 }
